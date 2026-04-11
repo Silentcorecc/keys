@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, PermissionFlagsBits } = require('discord.js');
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '';
@@ -15,9 +15,7 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
   ],
-
   partials: [Partials.Channel],
 });
 
@@ -93,6 +91,25 @@ function formatResponse(data) {
   return data.message || 'Done';
 }
 
+
+async function getGuildMember(message) {
+  if (!message.inGuild()) return null;
+  try {
+    return await message.guild.members.fetch({ user: message.author.id, force: true });
+  } catch (error) {
+    console.error('Failed to fetch guild member:', error);
+    return message.member ?? null;
+  }
+}
+
+async function hasAdminAccess(message) {
+  const member = await getGuildMember(message);
+  if (!member) return false;
+  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
+  if (!ADMIN_ROLE_ID) return false;
+  return member.roles.cache.has(ADMIN_ROLE_ID);
+}
+
 async function callBackend(command, args, message) {
   const response = await fetch(SUPABASE_FUNCTION_URL, {
     method: 'POST',
@@ -128,6 +145,12 @@ client.once('ready', () => {
   console.log(`Logged in as ${client.user.tag}`);
 });
 
+console.log('Bot config', {
+  hasAdminRoleId: Boolean(ADMIN_ROLE_ID),
+  hasChannelRestriction: Boolean(DISCORD_CHANNEL_ID),
+  functionUrlHost: new URL(SUPABASE_FUNCTION_URL).host,
+});
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.content || !message.content.startsWith('!')) return;
@@ -149,8 +172,9 @@ client.on('messageCreate', async (message) => {
       return;
     }
 
-    if (!message.member || !message.member.roles.cache.has(ADMIN_ROLE_ID)) {
-      await message.reply('❌ You are not allowed to use this command.');
+    const allowed = await hasAdminAccess(message);
+    if (!allowed) {
+      await message.reply(`❌ You are not allowed to use this command. Your user ID: ${message.author.id}`);
       return;
     }
   }
