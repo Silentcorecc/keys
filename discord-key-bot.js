@@ -1,4 +1,14 @@
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, Partials } = require('discord.js');
+
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
+const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '';
+const SUPABASE_FUNCTION_URL = process.env.SUPABASE_FUNCTION_URL;
+const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID || '';
+
+if (!DISCORD_BOT_TOKEN || !SUPABASE_FUNCTION_URL) {
+  console.error('Missing DISCORD_BOT_TOKEN or SUPABASE_FUNCTION_URL');
+  process.exit(1);
+}
 
 const client = new Client({
   intents: [
@@ -6,146 +16,158 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Channel],
 });
 
-const BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
-const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '';
-const SUPABASE_FUNCTION_URL = 'https://uowyvhzklhhfuzwsldbv.supabase.co/functions/v1/discord-key-bot';
+process.on('unhandledRejection', (error) => {
+  console.error('Unhandled promise rejection:', error);
+});
 
-if (!BOT_TOKEN) {
-  console.error('DISCORD_BOT_TOKEN is not set!');
-  process.exit(1);
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+});
+
+function getHelpText() {
+  return [
+    '**Available commands**',
+    '`!help` - Show this message',
+    '`!stock` - Admin only',
+    '`!assign <email> <product> [variant]` - Admin only',
+    '`!lookup <email>` - Admin only',
+    '`!redeem <email or order_id>` - Anyone',
+  ].join('\n');
 }
 
-const PREFIX = '!';
+function formatResponse(data) {
+  if (data.error) return `❌ ${data.error}`;
 
-function isAdmin(member) {
-  if (!ADMIN_ROLE_ID) return true;
-  return member && member.roles && member.roles.cache.has(ADMIN_ROLE_ID);
+  if (Array.isArray(data.stock)) {
+    return [
+      data.message || '📦 Current Stock:',
+      ...data.stock.map((item) => `• ${item.product}: ${item.available}`),
+    ].join('\n');
+  }
+
+  if (data.key) {
+    return [
+      data.message || '✅ Key assigned successfully!',
+      `• Product: ${data.product}`,
+      `• Variant: ${data.variant}`,
+      `• Email: ${data.email}`,
+      `• Key: ${data.key}`,
+    ].join('\n');
+  }
+
+  if (Array.isArray(data.keys)) {
+    return [
+      data.message || 'Keys found:',
+      ...data.keys.map(
+        (item) => `• ${item.product} (${item.variant || 'default'}): ${item.key}`
+      ),
+    ].join('\n');
+  }
+
+  if (Array.isArray(data.recent_payments)) {
+    const keyLines = (data.keys || []).map(
+      (item) => `• ${item.product || 'Unknown'} (${item.variant || 'default'}): ${item.key}`
+    );
+    const paymentLines = data.recent_payments.map(
+      (payment) =>
+        `• ${payment.product_name || 'Unknown'} (${payment.product_variant || 'default'}) - ${payment.status}`
+    );
+
+    return [
+      `Email: ${data.email}`,
+      `Total keys: ${data.total_keys || 0}`,
+      keyLines.length ? 'Keys:' : 'No keys found.',
+      ...keyLines,
+      paymentLines.length ? 'Recent payments:' : '',
+      ...paymentLines,
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return data.message || 'Done';
 }
 
-async function callEdgeFunction(command, args, discordUserId, discordUsername) {
-  const res = await fetch(SUPABASE_FUNCTION_URL, {
+async function callBackend(command, args, message) {
+  const response = await fetch(SUPABASE_FUNCTION_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-bot-secret': BOT_TOKEN,
+      'x-bot-secret': DISCORD_BOT_TOKEN,
     },
     body: JSON.stringify({
       command,
       args,
-      discord_user_id: discordUserId,
-      discord_username: discordUsername,
+      discord_user_id: message.author.id,
+      discord_username: message.author.username,
     }),
   });
-  return res.json();
+
+  const text = await response.text();
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`Backend returned non-JSON: ${text}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(data.error || `HTTP ${response.status}`);
+  }
+
+  return data;
 }
 
 client.once('ready', () => {
-  console.log(`Bot logged in as ${client.user.tag}`);
+  console.log(`Logged in as ${client.user.tag}`);
 });
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
-  if (!message.content.startsWith(PREFIX)) return;
+  if (!message.content || !message.content.startsWith('!')) return;
+  if (DISCORD_CHANNEL_ID && message.channel.id !== DISCORD_CHANNEL_ID) return;
 
-  const args = message.content.slice(PREFIX.length).trim().split(/\s+/);
-  const command = args.shift().toLowerCase();
+  const [rawCommand, ...args] = message.content.trim().split(/\s+/);
+  const command = rawCommand.toLowerCase().replace(/^!+/, '');
+
+  if (command === 'help') {
+    await message.reply(getHelpText());
+    return;
+  }
+
+  if (!['stock', 'assign', 'redeem', 'lookup'].includes(command)) return;
+
+  if (['stock', 'assign', 'lookup'].includes(command)) {
+    if (!ADMIN_ROLE_ID) {
+      await message.reply('❌ ADMIN_ROLE_ID is missing in Railway.');
+      return;
+    }
+
+    if (!message.member || !message.member.roles.cache.has(ADMIN_ROLE_ID)) {
+      await message.reply('❌ You are not allowed to use this command.');
+      return;
+    }
+  }
 
   try {
-    // Admin-only commands
-    if (['assign', 'lookup', 'stock'].includes(command)) {
-      if (!isAdmin(message.member)) {
-        return message.reply('❌ You do not have permission to use this command.');
-      }
+    await message.channel.sendTyping();
+    const data = await callBackend(command, args, message);
+
+    if (command === 'redeem' && Array.isArray(data.keys) && data.keys.length > 0) {
+      await message.author.send(formatResponse(data));
+      await message.reply('✅ I sent your keys in DM.');
+      return;
     }
 
-    if (command === 'help') {
-      const embed = new EmbedBuilder()
-        .setTitle('🤖 Key Bot Commands')
-        .setColor(0x7c3aed)
-        .addFields(
-          { name: '!stock', value: 'Show available key stock (Admin)', inline: false },
-          { name: '!assign <email> <product> [variant]', value: 'Assign a key to an email (Admin)', inline: false },
-          { name: '!redeem <email or order_id>', value: 'Get your keys via DM', inline: false },
-          { name: '!lookup <email>', value: 'Look up user info (Admin)', inline: false },
-        )
-        .setFooter({ text: 'Key Delivery Bot' });
-      return message.reply({ embeds: [embed] });
-    }
-
-    if (command === 'stock') {
-      const data = await callEdgeFunction('stock', args, message.author.id, message.author.username);
-      if (data.error) return message.reply(`❌ ${data.error}`);
-
-      const stockLines = data.stock.map(s => `• **${s.product}**: ${s.available} keys`).join('\n');
-      const embed = new EmbedBuilder()
-        .setTitle('📦 Current Stock')
-        .setColor(0x10b981)
-        .setDescription(stockLines || 'No products found.')
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
-    }
-
-    if (command === 'assign') {
-      const data = await callEdgeFunction('assign', args, message.author.id, message.author.username);
-      if (data.error) return message.reply(`❌ ${data.error}`);
-
-      const embed = new EmbedBuilder()
-        .setTitle('✅ Key Assigned')
-        .setColor(0x10b981)
-        .addFields(
-          { name: 'Product', value: data.product, inline: true },
-          { name: 'Variant', value: data.variant, inline: true },
-          { name: 'Email', value: data.email, inline: true },
-          { name: 'Key', value: `\`${data.key}\``, inline: false },
-        )
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
-    }
-
-    if (command === 'redeem') {
-      const data = await callEdgeFunction('redeem', args, message.author.id, message.author.username);
-      if (data.error) return message.reply(`❌ ${data.error}`);
-
-      const keyLines = data.keys.map(k => `**${k.product}** (${k.variant})\n\`${k.key}\``).join('\n\n');
-      const embed = new EmbedBuilder()
-        .setTitle('🔑 Your Keys')
-        .setColor(0x7c3aed)
-        .setDescription(keyLines)
-        .setTimestamp();
-
-      try {
-        await message.author.send({ embeds: [embed] });
-        return message.reply('✅ Keys sent to your DMs!');
-      } catch {
-        return message.reply({ content: '⚠️ Could not DM you. Here are your keys:', embeds: [embed] });
-      }
-    }
-
-    if (command === 'lookup') {
-      const data = await callEdgeFunction('lookup', args, message.author.id, message.author.username);
-      if (data.error) return message.reply(`❌ ${data.error}`);
-
-      const keyLines = data.keys.length > 0
-        ? data.keys.map(k => `• **${k.product}** (${k.variant}): \`${k.key}\``).join('\n')
-        : 'No keys found';
-
-      const embed = new EmbedBuilder()
-        .setTitle(`🔍 Lookup: ${data.email}`)
-        .setColor(0x3b82f6)
-        .addFields(
-          { name: 'Total Keys', value: String(data.total_keys), inline: true },
-          { name: 'Keys', value: keyLines.slice(0, 1024), inline: false },
-        )
-        .setTimestamp();
-      return message.reply({ embeds: [embed] });
-    }
-
-  } catch (err) {
-    console.error('Command error:', err);
-    message.reply('❌ Something went wrong. Please try again.');
+    await message.reply(formatResponse(data));
+  } catch (error) {
+    console.error('Command failed:', error);
+    await message.reply(`❌ ${error.message || 'Command failed'}`);
   }
 });
 
-client.login(BOT_TOKEN);
+client.login(DISCORD_BOT_TOKEN);
