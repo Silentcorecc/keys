@@ -1,15 +1,3 @@
-{
-  "name": "discord-key-bot",
-  "version": "1.0.0",
-  "main": "discord-key-bot.js",
-  "scripts": {
-    "start": "node discord-key-bot.js"
-  },
-  "dependencies": {
-    "discord.js": "^14.14.1"
-  }
-}
-
 const { Client, GatewayIntentBits, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 
 // ===== CONFIGURATION =====
