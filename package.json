@@ -1,10 +1,8 @@
 {
-  "name": "silentcore-key-bot",
+  "name": "discord-key-bot",
   "version": "1.0.0",
-  "scripts": {
-    "start": "node discord-key-bot.js"
-  },
+  "main": "discord-key-bot.js",
   "dependencies": {
-    "discord.js": "^14.16.0"
+    "discord.js": "^14.14.1"
   }
 }
