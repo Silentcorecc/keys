@@ -1,8 +1,13 @@
 {
-  "name": "discord-key-bot",
+  "name": "keys",
   "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
   "main": "discord-key-bot.js",
+  "scripts": {
+    "start": "node discord-key-bot.js"
+  },
   "dependencies": {
-    "discord.js": "^14.14.1"
+    "discord.js": "^14.21.0"
   }
 }
