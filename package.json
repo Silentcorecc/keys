@@ -7,6 +7,9 @@
   "scripts": {
     "start": "node discord-key-bot.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "discord.js": "^14.21.0"
   }
