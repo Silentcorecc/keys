@@ -5,15 +5,15 @@
   "type": "commonjs",
   "main": "discord-key-bot.js",
   "scripts": {
-    "start": "node discord-key-bot.js"
+    "start": "node discord-key-bot.js",
     "ticket-bot": "node ticket-bot.js",
-"register": "node register-commands.js"
+    "register": "node register-commands.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-"@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
