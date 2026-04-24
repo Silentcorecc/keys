@@ -1,14 +1,9 @@
-const { Client, GatewayIntentBits, Partials, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, Events } = require('discord.js');
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
-const ADMIN_ROLE_ID = process.env.ADMIN_ROLE_ID || '';
-const SUPABASE_FUNCTION_URL = process.env.SUPABASE_FUNCTION_URL;
-const DISCORD_CHANNEL_ID = process.env.DISCORD_CHANNEL_ID || '';
-
-if (!DISCORD_BOT_TOKEN || !SUPABASE_FUNCTION_URL) {
-  console.error('Missing DISCORD_BOT_TOKEN or SUPABASE_FUNCTION_URL');
-  process.exit(1);
-}
+const TICKET_BOT_SECRET = process.env.TICKET_BOT_SECRET;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const EDGE_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/discord-key-bot`;
 
 const client = new Client({
   intents: [
@@ -16,183 +11,76 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
-  partials: [Partials.Channel],
 });
 
-process.on('unhandledRejection', (error) => {
-  console.error('Unhandled promise rejection:', error);
+client.once(Events.ClientReady, (c) => {
+  console.log(`✅ Bot ready as ${c.user.tag}`);
 });
 
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught exception:', error);
-});
-
-function getHelpText() {
-  return [
-    '**Available commands**',
-    '`!help` - Show this message',
-    '`!stock` - Admin only',
-    '`!assign <email> <product> [variant]` - Admin only',
-    '`!lookup <email>` - Admin only',
-    '`!redeem <email or order_id>` - Anyone',
-  ].join('\n');
-}
-
-function formatResponse(data) {
-  if (data.error) return `❌ ${data.error}`;
-
-  if (Array.isArray(data.stock)) {
-    return [
-      data.message || '📦 Current Stock:',
-      ...data.stock.map((item) => `• ${item.product}: ${item.available}`),
-    ].join('\n');
-  }
-
-  if (data.key) {
-    return [
-      data.message || '✅ Key assigned successfully!',
-      `• Product: ${data.product}`,
-      `• Variant: ${data.variant}`,
-      `• Email: ${data.email}`,
-      `• Key: ${data.key}`,
-    ].join('\n');
-  }
-
-  if (Array.isArray(data.keys)) {
-    return [
-      data.message || 'Keys found:',
-      ...data.keys.map(
-        (item) => `• ${item.product} (${item.variant || 'default'}): ${item.key}`
-      ),
-    ].join('\n');
-  }
-
-  if (Array.isArray(data.recent_payments)) {
-    const keyLines = (data.keys || []).map(
-      (item) => `• ${item.product || 'Unknown'} (${item.variant || 'default'}): ${item.key}`
-    );
-    const paymentLines = data.recent_payments.map(
-      (payment) =>
-        `• ${payment.product_name || 'Unknown'} (${payment.product_variant || 'default'}) - ${payment.status}`
-    );
-
-    return [
-      `Email: ${data.email}`,
-      `Total keys: ${data.total_keys || 0}`,
-      keyLines.length ? 'Keys:' : 'No keys found.',
-      ...keyLines,
-      paymentLines.length ? 'Recent payments:' : '',
-      ...paymentLines,
-    ]
-      .filter(Boolean)
-      .join('\n');
-  }
-
-  return data.message || 'Done';
-}
-
-
-async function getGuildMember(message) {
-  if (!message.inGuild()) return null;
-  try {
-    return await message.guild.members.fetch({ user: message.author.id, force: true });
-  } catch (error) {
-    console.error('Failed to fetch guild member:', error);
-    return message.member ?? null;
-  }
-}
-
-async function hasAdminAccess(message) {
-  const member = await getGuildMember(message);
-  if (!member) return false;
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
-  if (!ADMIN_ROLE_ID) return false;
-  return member.roles.cache.has(ADMIN_ROLE_ID);
-}
-
-async function callBackend(command, args, message) {
-  const response = await fetch(SUPABASE_FUNCTION_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-bot-secret': DISCORD_BOT_TOKEN,
-    },
-    body: JSON.stringify({
-      command,
-      args,
-      discord_user_id: message.author.id,
-      discord_username: message.author.username,
-    }),
-  });
-
-  const text = await response.text();
-
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw new Error(`Backend returned non-JSON: ${text}`);
-  }
-
-  if (!response.ok) {
-    throw new Error(data.error || `HTTP ${response.status}`);
-  }
-
-  return data;
-}
-
-client.once('ready', () => {
-  console.log(`Logged in as ${client.user.tag}`);
-});
-
-console.log('Bot config', {
-  hasAdminRoleId: Boolean(ADMIN_ROLE_ID),
-  hasChannelRestriction: Boolean(DISCORD_CHANNEL_ID),
-  functionUrlHost: new URL(SUPABASE_FUNCTION_URL).host,
-});
-
-client.on('messageCreate', async (message) => {
+client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
-  if (!message.content || !message.content.startsWith('!')) return;
-  if (DISCORD_CHANNEL_ID && message.channel.id !== DISCORD_CHANNEL_ID) return;
+  if (!message.content.startsWith('!')) return;
 
-  const [rawCommand, ...args] = message.content.trim().split(/\s+/);
-  const command = rawCommand.toLowerCase().replace(/^!+/, '');
+  const parts = message.content.slice(1).trim().split(/\s+/);
+  const command = parts[0]?.toLowerCase();
+  const args = parts.slice(1);
 
-  if (command === 'help') {
-    await message.reply(getHelpText());
-    return;
-  }
-
-  if (!['stock', 'assign', 'redeem', 'lookup'].includes(command)) return;
-
-  if (['stock', 'assign', 'lookup'].includes(command)) {
-    if (!ADMIN_ROLE_ID) {
-      await message.reply('❌ ADMIN_ROLE_ID is missing in Railway.');
-      return;
-    }
-
-    const allowed = await hasAdminAccess(message);
-    if (!allowed) {
-      await message.reply(`❌ You are not allowed to use this command. Your user ID: ${message.author.id}`);
-      return;
-    }
-  }
+  if (!['assign', 'redeem', 'stock', 'lookup'].includes(command)) return;
 
   try {
     await message.channel.sendTyping();
-    const data = await callBackend(command, args, message);
 
-    if (command === 'redeem' && Array.isArray(data.keys) && data.keys.length > 0) {
-      await message.author.send(formatResponse(data));
-      await message.reply('✅ I sent your keys in DM.');
+    const res = await fetch(EDGE_FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-bot-secret': TICKET_BOT_SECRET,
+      },
+      body: JSON.stringify({
+        command,
+        args,
+        discord_user_id: message.author.id,
+        discord_username: message.author.username,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (data.error) {
+      await message.reply(`❌ ${data.error}`);
       return;
     }
 
-    await message.reply(formatResponse(data));
-  } catch (error) {
-    console.error('Command failed:', error);
-    await message.reply(`❌ ${error.message || 'Command failed'}`);
+    // Format reply based on command
+    let reply = data.message || '✅ Done';
+
+    if (command === 'assign' && data.key) {
+      reply = `✅ **Key assigned**\n📦 Product: ${data.product}\n🎟️ Variant: ${data.variant}\n📧 Email: ${data.email}\n🔑 Key: \`${data.key}\``;
+    }
+
+    if (command === 'redeem' && data.keys?.length) {
+      reply = `✅ Found ${data.keys.length} key(s):\n` + data.keys
+        .map((k) => `• **${k.product}** (${k.variant}): \`${k.key}\``)
+        .join('\n');
+    }
+
+    if (command === 'stock' && data.stock) {
+      reply = `📦 **Current Stock:**\n` + data.stock
+        .map((s) => `• ${s.product}: **${s.available}**`)
+        .join('\n');
+    }
+
+    if (command === 'lookup' && data.email) {
+      reply = `🔍 **Lookup: ${data.email}**\n🔑 Total keys: ${data.total_keys}\n💳 Recent payments: ${data.recent_payments?.length || 0}`;
+    }
+
+    // Discord max message length is 2000
+    if (reply.length > 1900) reply = reply.slice(0, 1900) + '...';
+
+    await message.reply(reply);
+  } catch (err) {
+    console.error('Bot error:', err);
+    await message.reply(`❌ Error: ${err.message}`);
   }
 });
 
