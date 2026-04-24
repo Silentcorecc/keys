@@ -6,6 +6,8 @@
   "main": "discord-key-bot.js",
   "scripts": {
     "start": "node discord-key-bot.js"
+    "ticket-bot": "node ticket-bot.js",
+"register": "node register-commands.js"
   },
   "engines": {
     "node": ">=18"
